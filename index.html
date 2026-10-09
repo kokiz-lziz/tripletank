@@ -1,0 +1,1130 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Triple-Tank Control Dashboard</title>
+<!--
+  Triple-Tank Level Control — dashboard
+  -------------------------------------
+  Two ways to connect (same screen, same messages):
+    • Connect USB    — Web Serial. Plug in the controller ESP32 or the gateway ESP32.
+                       Close the Arduino/PlatformIO Serial Monitor first (one program per COM port).
+                       When plugged into the gateway, a "Remote access" switch appears:
+                       Off / View / Full — only the person at the plant (USB) can change it.
+    • Connect Online — MQTT over secure WebSocket (EMQX Serverless), from anywhere.
+                       What you can do depends on the plant's Remote access switch.
+  Open in Google Chrome or Microsoft Edge (desktop). Everything is in this one file;
+  USB mode needs no internet (fonts fall back to system fonts when offline).
+-->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#0e1318; --panel:#141b22; --panel2:#0f151b; --line:#243040; --line2:#3a4a5c;
+  --text:#e6edf3; --text2:#c9d3dc; --muted:#8b98a5; --faint:#6f7c89;
+  --water:#2f8fbf; --est:rgba(90,170,215,0.35); --est-line:#9ad8f2; --accent:#6cc4ea;
+  --sp:#f0a030; --pwm:#b39ddb; --ok:#3fbf7f; --bad:#e5484d; --warn:#f0c674;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--text);font-family:'IBM Plex Sans',system-ui,-apple-system,'Segoe UI',sans-serif}
+.mono{font-family:'IBM Plex Mono',ui-monospace,Consolas,monospace}
+button,input{font-family:inherit}
+button{cursor:pointer}
+button:disabled{cursor:not-allowed;opacity:.45}
+.app{min-width:1280px;max-width:1600px;margin:0 auto;padding:20px 24px;display:flex;flex-direction:column;gap:14px}
+
+/* header */
+header{display:flex;align-items:center;gap:16px}
+.brand{flex:1;display:flex;flex-direction:column;gap:2px}
+.eyebrow{white-space:nowrap;font-size:12px;letter-spacing:.14em;color:var(--muted);font-weight:600}
+h1{margin:0;font-size:24px;font-weight:700;color:#f2f5f8;white-space:nowrap}
+.chip{display:flex;align-items:center;gap:10px;padding:10px 14px;background:#161d24;border:1px solid var(--line);border-radius:10px;font-size:14px;color:var(--text2);white-space:nowrap}
+.dot{width:10px;height:10px;border-radius:50%;background:#56626f;flex:none}
+.btn{height:44px;padding:0 18px;border-radius:10px;border:1px solid var(--line2);background:transparent;color:var(--text);font-size:15px;font-weight:600}
+.btn-primary{background:var(--sp);border-color:var(--sp);color:#1a1206}
+.btn-connect{background:#1f5f7f;border-color:var(--accent);color:#fff}
+.estop{height:52px;padding:0 18px;white-space:nowrap;background:#c62f35;color:#fff;border:2px solid #ff6b70;border-radius:12px;font-size:15px;font-weight:700;letter-spacing:.06em;display:flex;align-items:center;gap:10px}
+.estop.active{background:#3a1d20;border-color:#ff9da1;color:#ffb3b6;animation:pulse 1s infinite}
+@keyframes pulse{50%{box-shadow:0 0 0 6px rgba(229,72,77,.25)}}
+
+/* status strip */
+.strip{display:flex;align-items:center;gap:12px;flex-wrap:wrap}
+.lamp{height:46px;display:flex;align-items:center;gap:10px;padding:0 16px;background:#161d24;border:1px solid var(--line);border-radius:10px;font-size:14px;color:var(--text2)}
+.lamp .l{width:12px;height:12px;border-radius:50%;background:#3a4552;border:1px solid #56626f}
+.lamp .s{font-size:12px;font-weight:700;color:var(--muted);letter-spacing:.04em}
+.lamp.on-warn{background:#2c2616;border-color:#6b5a2a}.lamp.on-warn .l{background:var(--sp);border-color:#ffd08a;animation:blink 1s infinite}.lamp.on-warn .s{color:var(--warn)}
+.lamp.on-bad{background:#3a1d20;border-color:#7a3035}.lamp.on-bad .l{background:var(--bad);border-color:#ff9da1;animation:blink .7s infinite}.lamp.on-bad .s{color:#ff9da1}
+@keyframes blink{50%{opacity:.25}}
+.mode-badge{height:46px;display:flex;align-items:center;gap:10px;padding:0 16px;background:#1b2a1f;border:1px solid #2e5a3b;border-radius:10px}
+.mode-badge .k{font-size:12px;color:#8fd6a8;font-weight:700;letter-spacing:.08em}
+.mode-badge .v{font-size:16px;font-weight:700;color:#d8f5e2}
+
+/* main grid */
+.main{display:grid;grid-template-columns:450px minmax(0,1fr) 340px;gap:14px;align-items:start}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 20px;display:flex;flex-direction:column;gap:14px}
+.panel h2{margin:0;font-size:16px;font-weight:600;color:#f2f5f8}
+.sub{font-size:12px;color:var(--muted)}
+.row{display:flex;align-items:center;gap:10px}
+.spacer{flex:1}
+
+/* pump */
+.pump{display:flex;align-items:center;gap:12px;padding:10px 14px;background:var(--panel2);border:1px solid var(--line);border-radius:10px}
+.bar{width:80px;flex:none;height:8px;background:var(--line);border-radius:4px;overflow:hidden}
+.bar>div{height:8px;background:var(--accent);width:0%}
+
+/* tanks */
+.tanks{display:flex;align-items:flex-start;gap:8px}
+.scale{width:28px;height:342px;margin-top:-6px;padding-bottom:0;display:flex;flex-direction:column;justify-content:space-between;align-items:flex-end;font-size:11px;color:var(--faint)}
+.tankcol{display:flex;flex-direction:column;align-items:center;gap:8px}
+.tank{width:94px;height:330px;position:relative;border:2px solid var(--line2);border-top:none;border-radius:0 0 8px 8px;background:var(--panel2);overflow:hidden}
+.fill{position:absolute;left:0;right:0;bottom:0;height:0;transition:height .4s linear}
+.fill.meas{background:var(--water)}
+.fill.est{background:var(--est);border-top:2px dashed var(--est-line)}
+.fill.hidden{opacity:.12}
+.zone{position:absolute;left:0;right:0;top:0;height:10%;border-bottom:1px dashed var(--sp);background:repeating-linear-gradient(135deg,rgba(240,160,48,.22) 0 6px,rgba(240,160,48,.06) 6px 12px)}
+.spline{position:absolute;left:-2px;right:-2px;border-top:2px dashed var(--sp);transition:bottom .3s}
+.spline span{position:absolute;right:4px;top:-17px;font-size:11px;font-weight:700;color:var(--sp)}
+.pipe{width:18px;height:6px;background:var(--line2);flex:none;margin-top:306px}
+.tanklabel{display:flex;flex-direction:column;align-items:center;gap:2px;height:46px;white-space:nowrap}
+.tanklabel .n{font-size:13px;color:var(--muted)}
+.tanklabel .v{font-size:18px;font-weight:600}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:var(--muted)}
+.legend span{display:flex;align-items:center;gap:6px}
+.sw{width:14px;height:10px;display:inline-block}
+.kpis{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}
+.kpi{padding:12px 14px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;display:flex;flex-direction:column;gap:4px}
+.kpi .k{font-size:12px;color:var(--muted)}
+.kpi .v{font-size:20px;font-weight:600}
+
+/* charts */
+.seg{display:flex;background:var(--panel2);border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{padding:6px 12px;background:transparent;color:var(--muted);border:none;font-size:13px}
+.seg button[aria-pressed=true]{background:var(--line);color:#f2f5f8}
+.small{padding:6px 12px;background:transparent;color:var(--text2);border:1px solid var(--line2);border-radius:8px;font-size:13px}
+canvas{display:block;width:100%}
+.chartwrap{position:relative}
+
+/* log */
+.log{display:flex;flex-direction:column;gap:6px;max-height:230px;overflow-y:auto}
+.logline{display:flex;gap:10px;align-items:baseline;font-size:13px;line-height:18px}
+.logline>span:last-child{flex:1;min-width:0;overflow-wrap:anywhere}
+.logline .t{color:var(--faint);width:64px;flex:none}
+.tag{padding:1px 8px;border-radius:4px;font-size:11px;font-weight:700;flex:none;white-space:nowrap;line-height:16px}
+.tag.ok{background:#1b2a1f;color:#8fd6a8}.tag.rej{background:#3a1d20;color:#ff9da1}
+.tag.tgains{background:#1a2733;color:var(--est-line)}.tag.boot{background:#2c2616;color:var(--warn)}
+.tag.sys{background:#1e2530;color:var(--text2)}.tag.err{background:#3a1d20;color:#ff9da1}
+
+/* controls */
+.lbl{font-size:13px;color:var(--muted);font-weight:600}
+.modes{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:6px}
+.modes button{height:44px;background:var(--panel2);color:var(--text2);border:1px solid #2c3a4a;border-radius:8px;font-size:14px}
+.modes button[aria-checked=true]{background:#1f5f7f;color:#fff;border-color:var(--accent);font-weight:600}
+input[type=range]{accent-color:var(--sp);flex:1}
+.num{width:70px;height:36px;padding:0 8px;background:var(--panel2);color:var(--text);border:1px solid var(--line2);border-radius:6px;font-size:15px}
+.toggle{display:flex;align-items:center;justify-content:space-between;padding:10px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;cursor:pointer}
+.toggle input{width:20px;height:20px;accent-color:var(--accent)}
+.gains{display:flex;flex-direction:column;gap:10px;padding:14px;background:var(--panel2);border:1px solid var(--line);border-radius:10px}
+.ggrid{display:grid;grid-template-columns:58px 90px minmax(0,1fr);gap:8px;align-items:center}
+.ggrid input{height:34px;padding:0 8px;background:var(--panel);color:var(--text);border:1px solid var(--line2);border-radius:6px;font-size:14px;width:100%}
+.ggrid input.set{border-color:var(--sp)}
+.ggrid input.invalid{border-color:var(--bad);background:#2a1618}
+.inuse{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.badge{padding:1px 6px;border-radius:4px;font-size:10px;font-weight:700}
+.badge.auto{background:#1a2733;color:var(--est-line)}.badge.locked{background:#2c2616;color:var(--warn)}
+.hint{font-size:12px;color:var(--faint)}
+.dim{opacity:.45}
+.banner{padding:12px 16px;border-radius:10px;background:#3a1d20;border:1px solid #7a3035;color:#ffc9cb;font-size:14px;display:none}
+.banner.info{background:#1a2733;border-color:#2f5a78;color:#cfe9f7}
+.banner.warn{background:#2c2616;border-color:#6b5a2a;color:#f6dfa8}
+.tag.remote{background:#2a2340;color:#d7c8ff}
+/* remote access (USB + gateway only) */
+.rbox{height:46px;display:flex;align-items:center;gap:10px;padding:0 6px 0 14px;background:#161d24;border:1px solid var(--line);border-radius:10px;font-size:14px;color:var(--text2)}
+.rbox .seg button{padding:7px 12px;font-weight:600}
+.rbox .seg button[aria-pressed=true][data-r=off]{background:#2a3440;color:#e6edf3}
+.rbox .seg button[aria-pressed=true][data-r=view]{background:#1f5f7f;color:#fff}
+.rbox .seg button[aria-pressed=true][data-r=full]{background:#8a5a12;color:#fff}
+.rbox.full{border-color:#8a5a12;background:#2c2616}
+.netdots{display:flex;gap:8px;font-size:12px;color:var(--muted)}
+.netdots span{display:flex;align-items:center;gap:4px}
+.netdots i{width:8px;height:8px;border-radius:50%;background:#3a4552;display:inline-block}
+.netdots i.on{background:var(--ok)}
+/* online connect dialog */
+dialog{background:var(--panel);color:var(--text);border:1px solid var(--line2);border-radius:14px;padding:22px 24px;width:440px}
+dialog::backdrop{background:rgba(5,8,12,.7)}
+dialog h2{margin:0 0 4px;font-size:18px}
+.field{display:flex;flex-direction:column;gap:4px;margin-top:12px}
+.field input{height:38px;padding:0 10px;background:var(--panel2);color:var(--text);border:1px solid var(--line2);border-radius:8px;font-size:14px}
+.locked-ui{opacity:.4;pointer-events:none}
+/* ---- phones and small screens ---- */
+@media (max-width:1100px){
+  .app{min-width:0;padding:12px;gap:10px}
+  header{flex-wrap:wrap;gap:8px}
+  .brand{flex-basis:100%}
+  h1{font-size:20px;white-space:normal}
+  .chip{padding:8px 10px;font-size:13px}
+  .btn{height:40px;padding:0 14px}
+  .estop{height:44px;font-size:14px}
+  .strip{gap:8px}
+  .lamp,.mode-badge,.rbox{height:40px;padding:0 10px;font-size:13px}
+  .main{grid-template-columns:minmax(0,1fr)}
+  .panel{padding:14px}
+  .tanks{justify-content:center}
+  .tank{width:76px;height:260px}
+  .scale{height:272px}
+  .pipe{width:12px;margin-top:240px}
+  .log{max-height:180px}
+  #pumpText{white-space:normal}
+  .bar{width:56px}
+  dialog{width:min(440px,94vw);padding:18px}
+}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="banner" id="noSerial">
+    This browser does not support USB (Web Serial) — use Google Chrome or Microsoft Edge on a computer for USB. "Connect Online" still works here.
+  </div>
+
+  <div class="banner" id="remoteBanner"></div>
+
+  <!-- ================= Header ================= -->
+  <header>
+    <div class="brand">
+      <div class="eyebrow">GRADUATION PROJECT · PROCESS CONTROL</div>
+      <h1>Triple-Tank Level Control</h1>
+    </div>
+    <div class="chip"><span class="dot" id="connDot"></span><span id="connText">Disconnected</span><span class="mono" id="ageText" style="color:var(--muted)"></span></div>
+    <div class="chip" id="simChip" style="display:none;background:#2a2340;border-color:#5b4a8a;color:#d7c8ff;font-weight:700;letter-spacing:.06em">SIMULATION</div>
+    <div class="chip"><span style="color:var(--muted)">Uptime</span><span class="mono" id="uptime">--:--:--</span></div>
+    <div class="chip" id="viaChip" style="display:none"></div>
+    <button class="btn btn-connect" id="btnConnect" type="button">Connect USB</button>
+    <button class="btn btn-connect" id="btnOnline" type="button">Connect Online</button>
+    <button class="estop" id="btnEstop" type="button" aria-pressed="false">
+      <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3h8l5 5v8l-5 5H8l-5-5V8z"/><path d="M12 8v5"/><path d="M12 16.5v.5"/></svg>
+      <span id="estopText">EMERGENCY STOP</span>
+    </button>
+  </header>
+
+  <!-- ================= Status strip ================= -->
+  <div class="strip">
+    <div class="mode-badge"><span class="k">MODE</span><span class="v" id="modeBadge">--</span><span class="mono" style="font-size:13px;color:#8fd6a8" id="spBadge"></span></div>
+    <div class="lamp" id="lampDerate"><span class="l"></span>Tank-1 protection<span class="s">OFF</span></div>
+    <div class="lamp" id="lampSfault"><span class="l"></span>Sensor fault<span class="s">OK</span></div>
+    <div class="lamp" id="lampEstop"><span class="l"></span>E-stop<span class="s">RELEASED</span></div>
+    <div class="rbox" id="remoteBox" style="display:none" title="Only the person connected by USB at the plant can change this">
+      <span>Remote</span>
+      <div class="seg" role="group" aria-label="Remote access" id="remoteSeg">
+        <button type="button" data-r="off" aria-pressed="false">Off</button>
+        <button type="button" data-r="view" aria-pressed="false">View</button>
+        <button type="button" data-r="full" aria-pressed="false">Full</button>
+      </div>
+      <div class="netdots"><span><i id="dWifi"></i>WiFi</span><span><i id="dMqtt"></i>Cloud</span><span><i id="dLink"></i>Ctrl</span></div>
+    </div>
+    <div class="spacer"></div>
+    <div class="lamp"><span style="color:var(--muted);font-size:13px">Control timing</span><span class="mono" style="font-size:13px" id="timing">late - · max - ms</span><span class="mono" style="font-size:13px;color:var(--muted)" id="mvText"></span></div>
+  </div>
+
+  <!-- ================= Main ================= -->
+  <div class="main">
+
+    <!-- ---------- Process ---------- -->
+    <section class="panel">
+      <div class="row"><h2>Process</h2><span class="spacer"></span><span class="sub">levels from tank bottom · 1 m tanks</span></div>
+
+      <div class="pump">
+        <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#6cc4ea" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4v8l6 4"/></svg>
+        <div style="flex:1;display:flex;flex-direction:column;gap:2px">
+          <span style="font-size:13px;color:var(--muted)">Pump</span>
+          <span class="mono" style="font-size:14px;white-space:nowrap" id="pumpText">PWM - / 255 · - cm³/s</span>
+        </div>
+        <div class="bar"><div id="pumpBar"></div></div>
+      </div>
+
+      <div class="tanks">
+        <div class="scale mono"><span>100</span><span>75</span><span>50</span><span>25</span><span>0</span></div>
+        <div class="tankcol">
+          <div class="tank"><div class="zone"></div><div class="fill est" id="fill1"></div></div>
+          <div class="tanklabel"><span class="n">Tank 1 · <span style="color:var(--est-line)">est.</span></span><span class="v mono" id="v1">-- cm</span></div>
+        </div>
+        <div class="pipe"></div>
+        <div class="tankcol">
+          <div class="tank"><div class="fill est" id="fill2"></div></div>
+          <div class="tanklabel"><span class="n">Tank 2 · <span style="color:var(--est-line)">est.</span></span><span class="v mono" id="v2">-- cm</span></div>
+        </div>
+        <div class="pipe"></div>
+        <div class="tankcol">
+          <div class="tank"><div class="fill meas" id="fill3"></div><div class="spline" id="spLine" style="bottom:25%"><span>SP</span></div></div>
+          <div class="tanklabel"><span class="n">Tank 3 · <span style="color:var(--text2)">meas.</span></span><span class="v mono" id="v3">-- cm</span></div>
+        </div>
+      </div>
+
+      <div class="legend">
+        <span><i class="sw" style="background:var(--water)"></i>Measured</span>
+        <span><i class="sw" style="background:var(--est);border-top:2px dashed var(--est-line)"></i>ESO estimate</span>
+        <span><i class="sw" style="background:repeating-linear-gradient(135deg,rgba(240,160,48,.4) 0 3px,transparent 3px 6px)"></i>Protection zone 90–100 cm</span>
+      </div>
+      <div class="hint" id="estHint">Tank 1 and 2 are estimated by the ESO. Turn on "Show observer" to see them.</div>
+
+      <div class="kpis">
+        <div class="kpi"><span class="k">Error (SP − h3)</span><span class="v mono" id="kErr">--</span></div>
+        <div class="kpi"><span class="k">Disturbance d̂ (ESO)</span><span class="v mono" id="kD">--</span></div>
+      </div>
+    </section>
+
+    <!-- ---------- Trends + events ---------- -->
+    <div style="display:flex;flex-direction:column;gap:14px;min-width:0">
+      <section class="panel">
+        <div class="row">
+          <h2>Trends</h2><span class="spacer"></span>
+          <div class="seg" role="group" aria-label="Time window" id="winSeg">
+            <button type="button" data-win="300" aria-pressed="false">5 min</button>
+            <button type="button" data-win="600" aria-pressed="true">10 min</button>
+            <button type="button" data-win="1800" aria-pressed="false">30 min</button>
+          </div>
+          <button type="button" class="small" id="btnCsv">Export CSV</button>
+          <button type="button" class="small" id="btnClearData">Clear</button>
+        </div>
+        <div class="chartwrap"><canvas id="chLevel" height="240" aria-label="Level trend"></canvas></div>
+        <div class="legend">
+          <span><i class="sw" style="height:3px;background:var(--accent)"></i>h3 measured (cm)</span>
+          <span><i class="sw" style="height:0;border-top:2px dashed var(--sp)"></i>Setpoint</span>
+          <label style="display:flex;align-items:center;gap:6px;cursor:pointer"><input type="checkbox" id="chkEst" style="accent-color:var(--est-line)"> Show h1, h2 estimates</label>
+        </div>
+        <div class="chartwrap"><canvas id="chPwm" height="110" aria-label="Pump PWM trend"></canvas></div>
+        <div class="legend">
+          <span><i class="sw" style="height:3px;background:var(--pwm)"></i>Pump PWM (0–255)</span>
+          <span class="mono" id="samples">0 samples</span>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="row"><h2>Events</h2><span class="spacer"></span><button type="button" class="small" id="btnClearLog">Clear</button></div>
+        <div class="log" id="log"></div>
+      </section>
+    </div>
+
+    <!-- ---------- Control ---------- -->
+    <section class="panel" id="ctlPanel">
+      <h2>Control</h2>
+
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <span class="lbl">Controller</span>
+        <div class="modes" role="radiogroup" aria-label="Controller mode" id="modes">
+          <button type="button" role="radio" data-mode="0" aria-checked="true">Manual</button>
+          <button type="button" role="radio" data-mode="1" aria-checked="false">ZN-PID</button>
+          <button type="button" role="radio" data-mode="2" aria-checked="false">AI-PID</button>
+          <button type="button" role="radio" data-mode="3" aria-checked="false">I-FTSMC</button>
+          <button type="button" role="radio" data-mode="4" aria-checked="false">FSF</button>
+        </div>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <label class="lbl" for="spNum">Setpoint (tank 3)</label>
+        <div class="row">
+          <input type="range" id="spRange" min="8" max="50" step="0.5" value="25" aria-label="Setpoint slider">
+          <input type="number" id="spNum" class="num mono" min="8" max="50" step="0.5" value="25">
+          <span class="sub">cm</span>
+        </div>
+        <span class="hint">Range 8–50 cm · slider sends on release, box sends on Enter</span>
+      </div>
+
+      <div style="display:flex;flex-direction:column;gap:8px" id="pwmBlock">
+        <label class="lbl" for="pwmNum">Pump PWM (manual only)</label>
+        <div class="row">
+          <input type="range" id="pwmRange" min="0" max="255" step="1" value="0" aria-label="Pump PWM slider">
+          <input type="number" id="pwmNum" class="num mono" min="0" max="255" step="1" value="0">
+        </div>
+      </div>
+
+      <label class="toggle" id="esoToggle">
+        <span style="display:flex;flex-direction:column;gap:2px">
+          <span style="font-size:14px">Show observer (ESO)</span>
+          <span class="hint" id="esoHint">Always on in I-FTSMC</span>
+        </span>
+        <input type="checkbox" id="chkEso">
+      </label>
+
+      <div class="gains" id="gainsBox">
+        <div class="row"><span style="font-size:14px;font-weight:600" id="gainsTitle">Gains</span><span class="spacer"></span><span class="hint">empty = auto</span></div>
+        <div class="ggrid" id="ggrid"></div>
+        <span class="hint" id="gainsNote"></span>
+      </div>
+
+      <label class="toggle" id="simFaultBox" style="display:none;border-color:#5b4a8a">
+        <span style="display:flex;flex-direction:column;gap:2px">
+          <span style="font-size:14px">Simulate sensor wire cut</span>
+          <span class="hint">Simulation mode only — tests the sensor-fault protection</span>
+        </span>
+        <input type="checkbox" id="chkSimFault">
+      </label>
+
+      <button type="button" class="btn btn-primary" id="btnSend">Send to controller</button>
+    </section>
+  </div>
+</div>
+
+<dialog id="dlgOnline">
+  <form method="dialog" id="frmOnline">
+    <h2>Connect online</h2>
+    <div class="sub">MQTT broker details (EMQX Serverless → your deployment, WebSocket over TLS port). The password is never saved.</div>
+    <label class="field"><span class="lbl">Broker host</span><input id="oHost" required placeholder="xxxxxxxx.ala.eu-central-1.emqxsl.com" autocomplete="off" spellcheck="false"></label>
+    <div class="row">
+      <label class="field" style="flex:1"><span class="lbl">WebSocket port</span><input id="oPort" required value="8084" inputmode="numeric"></label>
+      <label class="field" style="flex:1"><span class="lbl">Device ID</span><input id="oDev" required value="lab1" spellcheck="false"></label>
+    </div>
+    <label class="field"><span class="lbl">Username</span><input id="oUser" autocomplete="username" spellcheck="false"></label>
+    <label class="field"><span class="lbl">Password</span><input id="oPass" type="password" autocomplete="current-password"></label>
+    <div class="row" style="margin-top:18px;justify-content:flex-end">
+      <button type="button" class="btn" id="oCancel">Cancel</button>
+      <button type="submit" class="btn btn-primary" id="oGo">Connect</button>
+    </div>
+  </form>
+</dialog>
+
+<script>
+'use strict';
+// ====================================================================
+//  Settings (must match the ESP32 code)
+// ====================================================================
+const BAUD = 115200;
+const SP_MIN = 8, SP_MAX = 50;
+const MAX_POINTS = 3600;        // 30 min at 500 ms
+const CSV_MAX_ROWS = 200000;
+const MODE_NAMES = ['Manual', 'ZN-PID', 'AI-PID', 'I-FTSMC', 'FSF'];
+// gains per controller: [message object, key, label, min, max]
+const GAINS = {
+  1: { obj: 'zpid',  title: 'ZN-PID gains',  note: 'Empty = calculated from the setpoint (Ziegler–Nichols).',
+       list: [['kp','Kp',0,2000],['ki','Ki',0,100],['kd','Kd',0,5000]] },
+  2: { obj: 'aipid', title: 'AI-PID gains',  note: 'Empty = PSO values stored in the ESP32 code.',
+       list: [['kp','Kp',0,2000],['ki','Ki',0,100],['kd','Kd',0,5000]] },
+  3: { obj: 'smc',   title: 'I-FTSMC gains', note: 'Empty = default values stored in the ESP32 code.',
+       list: [['k1','k1',0.01,1000],['k2','k2',0,1000],['alpha','α (k3)',0,1000],['beta','β',0,1000],['gamma','γ',0.1,0.99]] },
+  4: { obj: 'fsf',   title: 'FSF gains',     note: 'Empty = pole placement at the current setpoint.',
+       list: [['k1','K1',-1000,1000],['k2','K2',-1000,1000],['k3','K3',-1000,1000]] },
+};
+
+// ====================================================================
+//  State
+// ====================================================================
+const S = {
+  port: null, reader: null, writer: null, connected: false,
+  via: null,                           // 'usb' | 'online'
+  mq: null, topics: null,              // online (MQTT) connection
+  gw: null,                            // gateway status seen over USB: {remote,wifi,mqtt,link,ch}
+  remote: null,                        // online: {gw:'online'|'closed'|'offline', remote:'off'|'view'|'full', link}
+  lastRx: 0, mode: 0, uiMode: 0, estop: false,
+  sp: 25, pwm: 0, eso: false,
+  gainInputs: {1:{},2:{},3:{},4:{}},   // typed values per controller (strings)
+  gainsInUse: {},                      // mode -> {g, lock}
+  data: [],                            // telemetry ring buffer
+  csv: [],                             // full log for CSV
+  winSec: 600, showEst: false, last: null, session: 1,
+};
+const $ = (id) => document.getElementById(id);
+
+// ====================================================================
+//  Event log
+// ====================================================================
+function log(tag, cls, text) {
+  const el = document.createElement('div');
+  el.className = 'logline';
+  const t = new Date().toLocaleTimeString('en-GB');
+  el.innerHTML = '<span class="t mono"></span><span class="tag"></span><span style="color:var(--text2)"></span>';
+  el.children[0].textContent = t;
+  el.children[1].textContent = tag;
+  el.children[1].classList.add(cls);
+  el.children[2].textContent = text;
+  const box = $('log');
+  box.prepend(el);
+  while (box.children.length > 200) box.lastChild.remove();
+}
+
+// ====================================================================
+//  Serial connection
+// ====================================================================
+if (!('serial' in navigator)) {
+  $('noSerial').style.display = 'block';
+  $('btnConnect').disabled = true;
+}
+
+// ---------------------------- USB -----------------------------------
+$('btnConnect').addEventListener('click', async () => {
+  if (S.connected) { await disconnect(); return; }
+  try {
+    S.port = await navigator.serial.requestPort();
+    await S.port.open({ baudRate: BAUD });
+    S.writer = S.port.writable.getWriter();
+    S.connected = true; S.via = 'usb';
+    setConnUI();
+    log('SYSTEM', 'sys', 'Connected by USB');
+    readLoop();
+    setTimeout(() => { if (S.via === 'usb') sendObj({ gw: '?' }, true); }, 1500);   // a gateway answers with its status; the controller ignores it
+  } catch (e) {
+    if (e && e.name !== 'NotFoundError') log('ERROR', 'err', 'Could not open port: ' + e.message);
+  }
+});
+
+async function disconnect() {
+  const via = S.via;
+  S.connected = false;
+  if (via === 'usb') {
+    try { if (S.reader) await S.reader.cancel(); } catch (_) {}
+    try { if (S.writer) { S.writer.releaseLock(); } } catch (_) {}
+    try { if (S.port) await S.port.close(); } catch (_) {}
+    S.reader = S.writer = null;
+  } else if (via === 'online') {
+    try { if (S.mq) S.mq.close(); } catch (_) {}
+    S.mq = null;
+  }
+  S.via = null; S.gw = null; S.remote = null;
+  setConnUI(); applyRemoteUI();
+  log('SYSTEM', 'sys', 'Disconnected');
+}
+
+async function readLoop() {
+  const decoder = new TextDecoder();
+  let buf = '';
+  while (S.port && S.port.readable && S.connected && S.via === 'usb') {
+    S.reader = S.port.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await S.reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = buf.indexOf('\n')) >= 0) {
+          const line = buf.slice(0, i).replace(/\r$/, '');
+          buf = buf.slice(i + 1);
+          if (line.length) handleLine(line);
+        }
+        if (buf.length > 4096) buf = '';
+      }
+    } catch (e) {
+      if (S.connected) log('ERROR', 'err', 'Serial read error: ' + e.message);
+      break;
+    } finally {
+      try { S.reader.releaseLock(); } catch (_) {}
+    }
+  }
+  if (S.connected && S.via === 'usb') await disconnect();
+}
+
+navigator.serial && navigator.serial.addEventListener('disconnect', () => {
+  if (S.connected && S.via === 'usb') { log('ERROR', 'err', 'USB cable disconnected'); disconnect(); }
+});
+
+// --------------------------- Online ---------------------------------
+// Minimal MQTT 3.1.1 client over WebSocket (no library, so USB mode works fully offline).
+class MiniMqtt {
+  constructor(url, opt) {
+    this.url = url; this.opt = opt; this.ws = null; this.buf = new Uint8Array(0);
+    this.pid = 1; this.onmessage = null; this.onclose = null; this.closed = false; this.lastIn = 0; this.timer = null;
+  }
+  static str(s) { const b = new TextEncoder().encode(s); const o = new Uint8Array(2 + b.length); o[0] = b.length >> 8; o[1] = b.length & 255; o.set(b, 2); return o; }
+  static packet(type, parts) {
+    let len = parts.reduce((a, p) => a + p.length, 0); const rl = [];
+    do { let d = len % 128; len = Math.floor(len / 128); if (len > 0) d |= 128; rl.push(d); } while (len > 0);
+    const body = parts.reduce((a, p) => a + p.length, 0);
+    const o = new Uint8Array(1 + rl.length + body); o[0] = type; o.set(rl, 1);
+    let k = 1 + rl.length; for (const p of parts) { o.set(p, k); k += p.length; } return o;
+  }
+  connect() {
+    return new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (msg) => { if (!settled) { settled = true; reject(new Error(msg)); } this.close(msg); };
+      try { this.ws = new WebSocket(this.url, 'mqtt'); } catch (e) { reject(e); return; }
+      this.ws.binaryType = 'arraybuffer';
+      const to = setTimeout(() => fail('timeout (check host / port / internet)'), 12000);
+      this.ws.onopen = () => {
+        const { clientId, username, password, keepalive } = this.opt;
+        let flags = 0x02; const pl = [MiniMqtt.str(clientId)];
+        if (username) { flags |= 0x80; pl.push(MiniMqtt.str(username)); }
+        if (password) { flags |= 0x40; pl.push(MiniMqtt.str(password)); }
+        const vh = new Uint8Array([0, 4, 77, 81, 84, 84, 4, flags, keepalive >> 8, keepalive & 255]);
+        this.ws.send(MiniMqtt.packet(0x10, [vh, ...pl]));
+      };
+      this.ws.onerror = () => fail('connection error (check host / port)');
+      this.ws.onclose = () => { clearTimeout(to); fail('connection closed'); };
+      this.ws.onmessage = (ev) => {
+        this.lastIn = Date.now();
+        const add = new Uint8Array(ev.data), nb = new Uint8Array(this.buf.length + add.length);
+        nb.set(this.buf); nb.set(add, this.buf.length); this.buf = nb;
+        for (;;) {
+          if (this.buf.length < 2) break;
+          let mult = 1, len = 0, i = 1, d;
+          do { if (i >= this.buf.length) return; d = this.buf[i++]; len += (d & 127) * mult; mult *= 128; } while (d & 128);
+          if (this.buf.length < i + len) break;
+          const h = this.buf[0], body = this.buf.slice(i, i + len); this.buf = this.buf.slice(i + len);
+          const type = h >> 4;
+          if (type === 2) {                                   // CONNACK
+            clearTimeout(to);
+            const rc = body[1];
+            if (rc !== 0) { fail(['', 'bad protocol', 'client id rejected', 'server unavailable', 'wrong username or password', 'not authorized'][rc] || ('refused ' + rc)); return; }
+            settled = true;
+            const ka = this.opt.keepalive * 1000;
+            this.timer = setInterval(() => {
+              if (Date.now() - this.lastIn > ka * 1.5) { this.close('broker stopped answering'); return; }
+              try { this.ws.send(new Uint8Array([0xC0, 0])); } catch (_) {}
+            }, ka * 0.5);
+            resolve();
+          } else if (type === 3) {                            // PUBLISH
+            const qos = (h >> 1) & 3, tl = (body[0] << 8) | body[1];
+            const topic = new TextDecoder().decode(body.slice(2, 2 + tl));
+            let k = 2 + tl;
+            if (qos > 0) { const id = body.slice(k, k + 2); k += 2; if (qos === 1) this.ws.send(new Uint8Array([0x40, 2, id[0], id[1]])); }
+            const payload = new TextDecoder().decode(body.slice(k));
+            if (this.onmessage) this.onmessage(topic, payload);
+          }                                                   // SUBACK / PINGRESP: nothing to do
+        }
+      };
+    });
+  }
+  subscribe(topics) {
+    const id = this.pid++ & 0xffff || 1;
+    const parts = [new Uint8Array([id >> 8, id & 255])];
+    topics.forEach(t => { parts.push(MiniMqtt.str(t)); parts.push(new Uint8Array([0])); });
+    this.ws.send(MiniMqtt.packet(0x82, parts));
+  }
+  publish(topic, text) {
+    this.ws.send(MiniMqtt.packet(0x30, [MiniMqtt.str(topic), new TextEncoder().encode(text)]));
+  }
+  close(reason) {
+    if (this.closed) return; this.closed = true;
+    clearInterval(this.timer);
+    try { if (this.ws && this.ws.readyState === 1) this.ws.send(new Uint8Array([0xE0, 0])); } catch (_) {}
+    try { if (this.ws) this.ws.close(); } catch (_) {}
+    if (this.onclose) this.onclose(reason || 'closed');
+  }
+}
+
+function loadOnlineForm() {
+  try {
+    const o = JSON.parse(localStorage.getItem('tt_online') || '{}');
+    if (o.host) $('oHost').value = o.host;
+    if (o.port) $('oPort').value = o.port;
+    if (o.dev) $('oDev').value = o.dev;
+    if (o.user) $('oUser').value = o.user;
+  } catch (_) {}
+}
+
+$('btnOnline').addEventListener('click', async () => {
+  if (S.connected) { await disconnect(); return; }
+  loadOnlineForm();
+  $('dlgOnline').showModal();
+});
+$('oCancel').addEventListener('click', () => $('dlgOnline').close());
+$('frmOnline').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const host = $('oHost').value.trim(), port = $('oPort').value.trim(), dev = $('oDev').value.trim();
+  const user = $('oUser').value.trim(), pass = $('oPass').value;
+  if (!host || !dev) return;
+  try { localStorage.setItem('tt_online', JSON.stringify({ host, port, dev, user })); } catch (_) {}
+  $('dlgOnline').close();
+  await connectOnline(host, port, dev, user, pass);
+});
+
+async function connectOnline(host, port, dev, user, pass) {
+  const url = host.includes('://') ? host : `wss://${host}:${port}/mqtt`;
+  const base = `tripletank/${dev}`;
+  const mq = new MiniMqtt(url, { clientId: 'tt-dash-' + Math.random().toString(16).slice(2, 10), username: user, password: pass, keepalive: 30 });
+  log('SYSTEM', 'sys', `Connecting online to ${host} …`);
+  $('btnOnline').disabled = $('btnConnect').disabled = true;
+  try {
+    await mq.connect();
+  } catch (e) {
+    log('ERROR', 'err', 'Online connection failed: ' + e.message);
+    $('btnOnline').disabled = false; $('btnConnect').disabled = !('serial' in navigator);
+    return;
+  }
+  S.mq = mq; S.topics = { up: base + '/up', cmd: base + '/cmd', status: base + '/status' };
+  S.connected = true; S.via = 'online'; S.remote = null; S.lastRx = 0;
+  mq.onmessage = (topic, text) => {
+    if (topic === S.topics.status) { onRemoteStatus(text); return; }
+    if (topic === S.topics.up) text.split('\n').forEach(l => { if (l.trim()) handleLine(l.trim()); });
+  };
+  mq.onclose = (why) => {
+    if (S.via === 'online' && S.connected) { log('ERROR', 'err', 'Online connection lost: ' + why); disconnect(); }
+  };
+  mq.subscribe([S.topics.status, S.topics.up]);
+  setConnUI(); applyRemoteUI();
+  log('SYSTEM', 'sys', `Connected online · device "${dev}"`);
+  setTimeout(() => { if (S.via === 'online' && !S.remote) { S.remote = { gw: 'unknown' }; applyRemoteUI(); } }, 4000);
+}
+
+function onRemoteStatus(text) {
+  let m; try { m = JSON.parse(text); } catch (_) { return; }
+  const prev = S.remote ? `${S.remote.gw}/${S.remote.remote}/${S.remote.link}` : '';
+  S.remote = m;
+  const now = `${m.gw}/${m.remote}/${m.link}`;
+  if (prev !== now) {
+    const say = { online: `Plant gateway online · remote access: ${(m.remote || '?').toUpperCase()}${m.link === 0 ? ' · controller not reachable' : ''}`,
+                  closed: 'The plant operator turned remote access OFF', offline: 'Plant gateway went offline (power or internet at the plant)' }[m.gw] || 'Gateway status: ' + text;
+    log('REMOTE', 'remote', say);
+  }
+  applyRemoteUI();
+}
+
+// ---------------------------- Send ----------------------------------
+async function sendObj(obj, quiet) {
+  if (!S.connected) { if (!quiet) log('SYSTEM', 'sys', 'Not connected — command not sent'); return false; }
+  if (S.via === 'usb') {
+    if (!S.writer) return false;
+    await S.writer.write(new TextEncoder().encode(JSON.stringify(obj) + '\n'));
+    return true;
+  }
+  if (!canCommandOnline()) { if (!quiet) log('REJECTED', 'rej', 'Not sent — the plant operator has not allowed remote control'); return false; }
+  S.mq.publish(S.topics.cmd, JSON.stringify(obj));
+  return true;
+}
+
+function canCommandOnline() {
+  return S.via === 'online' && S.remote && S.remote.gw === 'online' && S.remote.remote === 'full' && S.remote.link !== 0;
+}
+
+// --------------------- Remote access (UI) ---------------------------
+function applyRemoteUI() {
+  // USB + gateway: the operator's switch
+  const box = $('remoteBox');
+  const g = S.via === 'usb' ? S.gw : null;
+  box.style.display = g ? '' : 'none';
+  if (g) {
+    document.querySelectorAll('#remoteSeg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.r === g.remote ? 'true' : 'false'));
+    box.classList.toggle('full', g.remote === 'full');
+    $('dWifi').classList.toggle('on', !!g.wifi); $('dMqtt').classList.toggle('on', !!g.mqtt); $('dLink').classList.toggle('on', !!g.link);
+  }
+
+  // Banner + control lock
+  const ban = $('remoteBanner');
+  let text = '', cls = '', lock = false;
+  if (S.via === 'usb' && g && g.remote === 'full') {
+    text = 'Remote control is ON — people connected online can send commands. Every online command appears in Events.'; cls = 'warn';
+  } else if (S.via === 'usb' && g && !g.link) {
+    text = 'Gateway connected, but the controller is not reachable over the wireless link.'; cls = 'warn';
+  } else if (S.via === 'online') {
+    const r = S.remote;
+    lock = !canCommandOnline();
+    if (!r) { text = 'Waiting for the plant gateway…'; cls = 'info'; }
+    else if (r.gw === 'online' && r.remote === 'full' && r.link !== 0) { text = 'Remote control allowed by the plant operator.'; cls = 'info'; }
+    else if (r.gw === 'online' && r.remote === 'full') { text = 'Gateway online, but the controller is not reachable from it.'; cls = 'warn'; }
+    else if (r.gw === 'online' && r.remote === 'view') { text = 'VIEW ONLY — the plant operator has disabled remote commands.'; cls = 'info'; }
+    else if (r.gw === 'offline') { text = 'The plant gateway is offline (no power or no internet at the plant).'; cls = ''; }
+    else if (r.gw === 'closed' || r.remote === 'off') { text = 'Remote access is turned OFF by the plant operator.'; cls = ''; }
+    else { text = 'No gateway found for this Device ID — check the Device ID and that the gateway is online.'; cls = ''; }
+  }
+  ban.textContent = text;
+  ban.className = 'banner' + (cls ? ' ' + cls : '');
+  ban.style.display = text ? 'block' : 'none';
+  setControlsLocked(lock);
+}
+
+function setControlsLocked(lock) {
+  S.locked = lock;
+  $('ctlPanel').classList.toggle('locked-ui', lock);
+  $('btnEstop').disabled = lock;
+  renderModes(); renderGains();   // they apply (or lift) the lock on every control
+}
+
+document.querySelectorAll('#remoteSeg button').forEach(b => b.addEventListener('click', async () => {
+  if (S.via !== 'usb' || !S.gw) return;
+  const r = b.dataset.r;
+  if (r === S.gw.remote) return;
+  if (r === 'full' && !confirm('Allow people connected online to CONTROL the plant?\n\nYou can switch back to View or Off at any time.')) return;
+  if (await sendObj({ remote: r })) log('SENT', 'sys', `Remote access → ${r.toUpperCase()}`);
+}));
+
+// ====================================================================
+//  Incoming messages
+// ====================================================================
+function handleLine(line) {
+  let m;
+  try { m = JSON.parse(line); } catch (_) { log('RAW', 'sys', line.slice(0, 160)); return; }
+  S.lastRx = performance.now();
+
+  if (m.t !== undefined && m.h3 !== undefined) { onTelemetry(m); return; }
+  if (m.gw && typeof m.gw === 'object') {                 // gateway status (USB)
+    const was = S.gw;
+    S.gw = m.gw;
+    if (!was) log('SYSTEM', 'sys', `Gateway detected · remote access ${m.gw.remote.toUpperCase()}`);
+    else if (was.remote !== m.gw.remote) log('REMOTE', 'remote', `Remote access is now ${m.gw.remote.toUpperCase()}`);
+    else if (was.link !== m.gw.link) log(m.gw.link ? 'SYSTEM' : 'ERROR', m.gw.link ? 'sys' : 'err', m.gw.link ? `Controller linked (channel ${m.gw.ch})` : 'Controller wireless link lost');
+    else if (was.mqtt !== m.gw.mqtt) log('SYSTEM', 'sys', m.gw.mqtt ? 'Gateway connected to the cloud' : 'Gateway not connected to the cloud');
+    applyRemoteUI();
+    return;
+  }
+  if (m.remote_cmd) { log('REMOTE', 'remote', 'Online command: ' + JSON.stringify(m.remote_cmd)); return; }
+  if (m.remote_blocked) { log('REMOTE', 'remote', `Blocked online command (${m.remote_blocked.replace('_', ' ')})${m.cmd ? ': ' + JSON.stringify(m.cmd) : ''}`); return; }
+  if (m.remote_rej) { log('REJECTED', 'rej', `The plant rejected the command (${m.remote_rej.replace('_', ' ')})`); return; }
+  if (m.gwboot) { log('BOOT', 'boot', 'Gateway started'); return; }
+  if (m.gwlink !== undefined) { log('SYSTEM', 'sys', m.gwlink ? `Wireless link to gateway up (channel ${m.ch})` : 'Wireless link to gateway lost'); return; }
+  if (m.err === 'no_link') { log('ERROR', 'err', 'Not delivered — controller not reachable over the wireless link'); return; }
+  if (m.ack) {
+    if (m.ok && m.ok.length) log('OK', 'ok', 'Accepted: ' + m.ok.join(', '));
+    (m.rej || []).forEach(r => log('REJECTED', 'rej', `${r.k} = ${JSON.stringify(r.v)} — allowed ${r.min} to ${r.max}`));
+    return;
+  }
+  if (m.ev === 'gains') {
+    S.gainsInUse[m.mode] = { g: m.g || {}, lock: m.lock || [] };
+    const parts = Object.entries(m.g || {}).map(([k, v]) => `${k} ${fmtGain(v)}${(m.lock || []).includes(k) ? ' (locked)' : ''}`);
+    log('GAINS', 'tgains', `${MODE_NAMES[m.mode]}: ${parts.join(' · ')}`);
+    renderGains();
+    return;
+  }
+  if (m.boot) { log('BOOT', 'boot', m.sim ? 'ESP32 started in SIMULATION mode (tanks simulated inside the ESP32)' : 'ESP32 started (reset or power-up)'); S.data = []; if (S.csv.length) S.session++; return; }
+  if (m.err) { log('ERROR', 'err', `ESP32: ${m.err}${m.msg ? ' — ' + m.msg : ''}`); return; }
+  log('RAW', 'sys', line.slice(0, 160));
+}
+
+function fmtGain(v) {
+  const a = Math.abs(v);
+  if (a >= 100) return v.toFixed(1);
+  if (a >= 1) return v.toFixed(3);
+  return v.toPrecision(3);
+}
+
+function onTelemetry(m) {
+  const pc = Date.now();
+  S.last = m;
+  S.data.push({ t: m.t / 1000, sp: m.sp, h1: m.h1, h2: m.h2, h3: m.h3, pwm: m.pwm });
+  if (S.data.length > MAX_POINTS) S.data.splice(0, S.data.length - MAX_POINTS);
+  if (S.csv.length < CSV_MAX_ROWS) S.csv.push([S.session, new Date(pc).toISOString(), m.t, m.mode, m.sp, m.h1, m.h2, m.h3, m.d, m.u, m.pwm, m.derate, m.sfault, m.estop]);
+
+  // keep the controls in step with the controller (first sample, or when the mode/setpoint changes)
+  if (!S._synced || m.mode !== S.mode) {
+    if (m.mode !== 3) S.eso = (m.h1 !== 0 || m.h2 !== 0);
+    S.mode = m.mode; S.uiMode = m.mode; S._synced = true;
+    renderModes(); renderGains();
+  }
+  if (m.sp !== S.spDev) {
+    S.spDev = m.sp;
+    if (document.activeElement !== $('spNum') && document.activeElement !== $('spRange')) { S.sp = m.sp; setSpUI(m.sp); }
+  }
+  S.estop = !!m.estop;
+  $('simChip').style.display = m.sim ? '' : 'none';
+  $('simFaultBox').style.display = m.sim ? '' : 'none';
+  if (document.activeElement !== $('chkSimFault')) $('chkSimFault').checked = !!m.simf;
+  renderProcess(m);
+  renderStatus(m);
+  drawCharts();
+}
+
+// ====================================================================
+//  Rendering
+// ====================================================================
+function pct(h) { return Math.max(0, Math.min(100, h)) + '%'; }
+
+function renderProcess(m) {
+  const showEst = (m.mode === 3) || S.eso || (m.h1 > 0 || m.h2 > 0);
+  $('fill3').style.height = pct(m.h3);
+  $('v3').textContent = m.h3.toFixed(2) + ' cm';
+  $('spLine').style.bottom = pct(m.sp);
+  if (showEst && (m.h1 > 0 || m.h2 > 0)) {
+    $('fill1').style.height = pct(m.h1); $('fill2').style.height = pct(m.h2);
+    $('fill1').classList.remove('hidden'); $('fill2').classList.remove('hidden');
+    $('v1').textContent = m.h1.toFixed(1) + ' cm'; $('v2').textContent = m.h2.toFixed(1) + ' cm';
+    $('kD').textContent = m.d.toFixed(3) + ' cm/s';
+    $('estHint').style.display = 'none';
+  } else {
+    $('fill1').classList.add('hidden'); $('fill2').classList.add('hidden');
+    $('v1').textContent = '-- cm'; $('v2').textContent = '-- cm'; $('kD').textContent = '--';
+    $('estHint').style.display = '';
+  }
+  const flow = m.u;
+  $('pumpText').textContent = `PWM ${m.pwm} / 255 · ${flow.toFixed(1)} cm³/s`;
+  $('pumpBar').style.width = (m.pwm / 255 * 100) + '%';
+  const err = m.sp - m.h3;
+  $('kErr').textContent = (err >= 0 ? '+' : '−') + Math.abs(err).toFixed(2) + ' cm';
+}
+
+function setLamp(id, on, cls, onText, offText) {
+  const el = $(id);
+  el.classList.remove('on-warn', 'on-bad');
+  if (on) el.classList.add(cls);
+  el.querySelector('.s').textContent = on ? onText : offText;
+}
+
+function renderStatus(m) {
+  $('modeBadge').textContent = MODE_NAMES[m.mode] || '?';
+  $('spBadge').textContent = m.mode === 0 ? `· PWM ${m.pwm}` : `· SP ${m.sp.toFixed(1)} cm`;
+  setLamp('lampDerate', !!m.derate, 'on-warn', 'ACTIVE', 'OFF');
+  setLamp('lampSfault', !!m.sfault, 'on-bad', 'FAULT', 'OK');
+  setLamp('lampEstop', !!m.estop, 'on-bad', 'ACTIVE', 'RELEASED');
+  $('timing').textContent = `late ${m.late ?? '-'} · max ${m.maxl ?? '-'} ms`;
+  $('mvText').textContent = m.mv !== undefined ? `· sensor ${m.mv} mV` : '';
+  const s = Math.floor(m.t / 1000);
+  $('uptime').textContent = [Math.floor(s / 3600), Math.floor(s / 60) % 60, s % 60].map(x => String(x).padStart(2, '0')).join(':');
+  const b = $('btnEstop');
+  b.classList.toggle('active', !!m.estop);
+  b.setAttribute('aria-pressed', m.estop ? 'true' : 'false');
+  $('estopText').textContent = m.estop ? 'RESET E-STOP' : 'EMERGENCY STOP';
+}
+
+function setConnUI() {
+  const usb = S.connected && S.via === 'usb', onl = S.connected && S.via === 'online';
+  $('btnConnect').textContent = usb ? 'Disconnect' : 'Connect USB';
+  $('btnConnect').className = usb ? 'btn' : 'btn btn-connect';
+  $('btnConnect').style.display = onl ? 'none' : '';
+  $('btnConnect').disabled = !('serial' in navigator);
+  $('btnOnline').textContent = onl ? 'Disconnect' : 'Connect Online';
+  $('btnOnline').className = onl ? 'btn' : 'btn btn-connect';
+  $('btnOnline').style.display = usb ? 'none' : '';
+  $('btnOnline').disabled = false;
+  $('viaChip').style.display = S.connected ? '' : 'none';
+  $('viaChip').textContent = usb ? 'USB' : (onl ? 'ONLINE' : '');
+  if (!S.connected) { $('connDot').style.background = '#56626f'; $('connText').textContent = 'Disconnected'; $('ageText').textContent = ''; S._synced = false; }
+}
+
+setInterval(() => {
+  if (!S.connected) return;
+  const age = S.lastRx ? (performance.now() - S.lastRx) / 1000 : Infinity;
+  const ok = age < 2;
+  $('connDot').style.background = ok ? 'var(--ok)' : 'var(--sp)';
+  $('connText').textContent = ok ? (S.via === 'online' ? 'Live' : 'ESP32 connected') : 'Connected · no data';
+  $('ageText').textContent = !isFinite(age) ? '· waiting for data' : (ok ? '' : `· last data ${age.toFixed(0)} s ago`);
+}, 250);
+
+// ====================================================================
+//  Charts (canvas, redrawn on each telemetry sample)
+// ====================================================================
+function setupCanvas(c) {
+  const dpr = window.devicePixelRatio || 1;
+  // Base CSS height is saved once: c.height (set below) rewrites the 'height' attribute,
+  // so reading it every frame made the chart grow forever on screens with scaling ≠ 100%.
+  if (!c.dataset.baseH) c.dataset.baseH = c.getAttribute('height');
+  const w = c.clientWidth, h = c.dataset.baseH | 0;
+  if (c.width !== Math.round(w * dpr) || c.height !== Math.round(h * dpr)) {
+    c.width = Math.round(w * dpr); c.height = Math.round(h * dpr); c.style.height = h + 'px';
+  }
+  const ctx = c.getContext('2d');
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, w, h };
+}
+
+function drawAxes(ctx, w, h, pad, yMin, yMax, ticks, tNow, win) {
+  ctx.clearRect(0, 0, w, h);
+  ctx.font = '11px "IBM Plex Mono", monospace';
+  ctx.fillStyle = '#6f7c89'; ctx.strokeStyle = '#243040'; ctx.lineWidth = 1;
+  ticks.forEach(v => {
+    const y = pad.t + (1 - (v - yMin) / (yMax - yMin)) * (h - pad.t - pad.b);
+    ctx.beginPath(); ctx.moveTo(pad.l, y + .5); ctx.lineTo(w - pad.r, y + .5); ctx.stroke();
+    ctx.textAlign = 'right'; ctx.textBaseline = 'middle'; ctx.fillText(String(v), pad.l - 6, y);
+  });
+  // time labels (minutes ago)
+  ctx.textAlign = 'center'; ctx.textBaseline = 'top';
+  const step = win <= 300 ? 60 : win <= 600 ? 120 : 300;
+  for (let s = 0; s <= win; s += step) {
+    const x = pad.l + (1 - s / win) * (w - pad.l - pad.r);
+    ctx.fillText(s === 0 ? 'now' : `-${s / 60}m`, x, h - pad.b + 6);
+  }
+}
+
+function plot(ctx, pts, key, tNow, win, pad, w, h, yMin, yMax, style) {
+  ctx.save();
+  ctx.strokeStyle = style.color; ctx.lineWidth = style.width || 2;
+  if (style.dash) ctx.setLineDash(style.dash);
+  ctx.beginPath();
+  let started = false, prevY = null;
+  for (const p of pts) {
+    const v = p[key];
+    if (v === undefined || v === null || (style.skipZero && v === 0)) { started = false; continue; }
+    const x = pad.l + (1 - (tNow - p.t) / win) * (w - pad.l - pad.r);
+    const y = pad.t + (1 - (Math.max(yMin, Math.min(yMax, v)) - yMin) / (yMax - yMin)) * (h - pad.t - pad.b);
+    if (!started) { ctx.moveTo(x, y); started = true; }
+    else if (style.step && prevY !== null) { ctx.lineTo(x, prevY); ctx.lineTo(x, y); }
+    else ctx.lineTo(x, y);
+    prevY = y;
+  }
+  ctx.stroke(); ctx.restore();
+}
+
+let drawPending = false;
+function drawCharts() {
+  if (drawPending) return;
+  drawPending = true;
+  requestAnimationFrame(() => {
+    drawPending = false;
+    const win = S.winSec;
+    const tNow = S.data.length ? S.data[S.data.length - 1].t : 0;
+    const pts = S.data.filter(p => tNow - p.t <= win);
+    $('samples').textContent = `${S.data.length} samples in memory`;
+
+    // levels
+    let { ctx, w, h } = setupCanvas($('chLevel'));
+    const pad = { l: 38, r: 10, t: 8, b: 22 };
+    let yMin = 0, yMax = 60;
+    if (pts.length) {
+      let lo = Infinity, hi = -Infinity;
+      pts.forEach(p => { lo = Math.min(lo, p.h3, p.sp); hi = Math.max(hi, p.h3, p.sp);
+        if (S.showEst && p.h1 > 0) { lo = Math.min(lo, p.h2); hi = Math.max(hi, p.h1); } });
+      yMin = Math.max(0, Math.floor((lo - 3) / 5) * 5);
+      yMax = Math.min(100, Math.ceil((hi + 3) / 5) * 5);
+      if (yMax - yMin < 10) yMax = yMin + 10;
+    }
+    const tk = []; const st = (yMax - yMin) > 40 ? 20 : (yMax - yMin) > 20 ? 10 : 5;
+    for (let v = Math.ceil(yMin / st) * st; v <= yMax; v += st) tk.push(v);
+    drawAxes(ctx, w, h, pad, yMin, yMax, tk, tNow, win);
+    if (S.showEst) {
+      plot(ctx, pts, 'h1', tNow, win, pad, w, h, yMin, yMax, { color: '#9ad8f2', width: 1.5, dash: [4, 4], skipZero: true });
+      plot(ctx, pts, 'h2', tNow, win, pad, w, h, yMin, yMax, { color: '#5aaad7', width: 1.5, dash: [4, 4], skipZero: true });
+    }
+    plot(ctx, pts, 'sp', tNow, win, pad, w, h, yMin, yMax, { color: '#f0a030', width: 2, dash: [7, 5], step: true });
+    plot(ctx, pts, 'h3', tNow, win, pad, w, h, yMin, yMax, { color: '#6cc4ea', width: 2.5 });
+
+    // pwm
+    ({ ctx, w, h } = setupCanvas($('chPwm')));
+    drawAxes(ctx, w, h, pad, 0, 255, [0, 128, 255], tNow, win);
+    plot(ctx, pts, 'pwm', tNow, win, pad, w, h, 0, 255, { color: '#b39ddb', width: 2, step: true });
+  });
+}
+window.addEventListener('resize', drawCharts);
+
+document.querySelectorAll('#winSeg button').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('#winSeg button').forEach(x => x.setAttribute('aria-pressed', 'false'));
+  b.setAttribute('aria-pressed', 'true');
+  S.winSec = +b.dataset.win; drawCharts();
+}));
+$('chkEst').addEventListener('change', e => { S.showEst = e.target.checked; drawCharts(); });
+$('btnClearData').addEventListener('click', () => { S.data = []; S.csv = []; S.session = 1; drawCharts(); log('SYSTEM', 'sys', 'Trend data cleared'); });
+$('btnClearLog').addEventListener('click', () => { $('log').innerHTML = ''; });
+
+$('btnCsv').addEventListener('click', () => {
+  const head = 'session,pc_time,esp_ms,mode,sp,h1_est,h2_est,h3,d_est,u_req,pwm,derate,sensor_fault,estop';
+  const body = S.csv.map(r => r.join(',')).join('\n');
+  const blob = new Blob([head + '\n' + body], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `tank_log_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.csv`;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  log('SYSTEM', 'sys', `CSV exported (${S.csv.length} rows)`);
+});
+
+// ====================================================================
+//  Controls
+// ====================================================================
+function renderModes() {
+  document.querySelectorAll('#modes button').forEach(b => b.setAttribute('aria-checked', (+b.dataset.mode === S.uiMode) ? 'true' : 'false'));
+  const manual = S.uiMode === 0;
+  $('pwmBlock').classList.toggle('dim', !manual);
+  $('pwmRange').disabled = $('pwmNum').disabled = !manual;
+  const smc = S.uiMode === 3;
+  $('chkEso').disabled = smc;
+  $('chkEso').checked = smc ? true : S.eso;
+  $('esoToggle').classList.toggle('dim', smc);
+  if (S.locked) $('ctlPanel').querySelectorAll('button, input').forEach(el => { el.disabled = true; });
+  else $('ctlPanel').querySelectorAll('#modes button, #spRange, #spNum, #btnSend, #chkSimFault').forEach(el => { el.disabled = false; });
+}
+
+function renderGains() {
+  const g = GAINS[S.uiMode];
+  const box = $('gainsBox');
+  if (!g) { box.style.display = 'none'; return; }
+  box.style.display = '';
+  $('gainsTitle').textContent = g.title;
+  $('gainsNote').textContent = g.note;
+  const inputs = S.gainInputs[S.uiMode];
+  const inUse = S.gainsInUse[S.uiMode];
+  const grid = $('ggrid');
+  grid.innerHTML = '';
+  g.list.forEach(([key, label, mn, mx]) => {
+    const id = `g_${S.uiMode}_${key}`;
+    const lab = document.createElement('label');
+    lab.htmlFor = id; lab.className = 'mono'; lab.style.fontSize = '14px'; lab.style.whiteSpace = 'nowrap'; lab.style.color = 'var(--text2)'; lab.textContent = label;
+    const inp = document.createElement('input');
+    inp.id = id; inp.type = 'text'; inp.placeholder = '--'; inp.className = 'mono'; inp.disabled = !!S.locked;
+    inp.value = inputs[key] ?? '';
+    inp.title = `Allowed ${mn} to ${mx}. Leave empty for automatic/default.`;
+    const refresh = () => {
+      const v = inp.value.trim();
+      inp.classList.toggle('set', v !== '');
+      inp.classList.toggle('invalid', v !== '' && !validNum(v, mn, mx));
+    };
+    inp.addEventListener('input', () => { inputs[key] = inp.value; refresh(); });
+    inp.addEventListener('keydown', e => { if (e.key === 'Enter') sendFull(); });
+    refresh();
+    const use = document.createElement('span');
+    use.className = 'inuse';
+    if (inUse && inUse.g[key] !== undefined) {
+      const locked = inUse.lock.includes(key);
+      use.innerHTML = `<span class="mono" style="color:var(--text2)"></span><span class="badge ${locked ? 'locked' : 'auto'}">${locked ? 'LOCKED' : 'AUTO'}</span>`;
+      use.firstChild.textContent = fmtGain(inUse.g[key]);
+    } else {
+      use.textContent = S.mode === S.uiMode ? 'waiting…' : 'after send';
+    }
+    grid.append(lab, inp, use);
+  });
+}
+
+function validNum(v, mn, mx) {
+  if (!/^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(v)) return false;
+  const f = parseFloat(v);
+  return isFinite(f) && f >= mn && f <= mx;
+}
+
+// Builds the FULL message (as agreed): mode + sp + eso + pwm + every typed gain.
+// Gains left empty are omitted → the ESP32 returns them to automatic/default.
+function buildMessage() {
+  const msg = { mode: S.uiMode, sp: S.sp };
+  if (S.uiMode !== 3) msg.eso = S.eso ? 1 : 0;
+  if (S.uiMode === 0) msg.pwm = S.pwm;
+  const bad = [];
+  for (const [mode, g] of Object.entries(GAINS)) {
+    const obj = {};
+    g.list.forEach(([key, label, mn, mx]) => {
+      const v = (S.gainInputs[mode][key] ?? '').trim();
+      if (v === '') return;
+      if (!validNum(v, mn, mx)) { bad.push(`${MODE_NAMES[mode]} ${label} (${mn} to ${mx})`); return; }
+      obj[key] = parseFloat(v);
+    });
+    if (Object.keys(obj).length) msg[g.obj] = obj;
+  }
+  return { msg, bad };
+}
+
+async function sendFull() {
+  const { msg, bad } = buildMessage();
+  if (bad.length) { log('REJECTED', 'rej', 'Not sent — invalid: ' + bad.join(', ')); return; }
+  if (await sendObj(msg)) log('SENT', 'sys', JSON.stringify(msg));
+}
+
+document.querySelectorAll('#modes button').forEach(b => b.addEventListener('click', () => {
+  S.uiMode = +b.dataset.mode;
+  renderModes(); renderGains();
+  sendFull();                          // mode change goes out immediately
+}));
+
+function setSpUI(v) { $('spRange').value = v; $('spNum').value = v; }
+$('spRange').addEventListener('input', e => { $('spNum').value = e.target.value; });
+$('spRange').addEventListener('change', e => { S.sp = +e.target.value; sendFull(); });
+$('spNum').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const v = parseFloat($('spNum').value);
+  if (!(v >= SP_MIN && v <= SP_MAX)) { log('REJECTED', 'rej', `Setpoint must be ${SP_MIN} to ${SP_MAX} cm`); setSpUI(S.sp); return; }
+  S.sp = v; setSpUI(v); sendFull();
+});
+
+$('pwmRange').addEventListener('input', e => { $('pwmNum').value = e.target.value; });
+$('pwmRange').addEventListener('change', e => { S.pwm = +e.target.value; sendFull(); });
+$('pwmNum').addEventListener('keydown', e => {
+  if (e.key !== 'Enter') return;
+  const v = Math.round(+$('pwmNum').value);
+  if (!(v >= 0 && v <= 255)) { log('REJECTED', 'rej', 'PWM must be 0 to 255'); return; }
+  S.pwm = v; $('pwmRange').value = v; $('pwmNum').value = v; sendFull();
+});
+
+$('chkEso').addEventListener('change', e => { S.eso = e.target.checked; sendFull(); });
+$('btnSend').addEventListener('click', sendFull);
+$('chkSimFault').addEventListener('change', async e => { if (await sendObj({ simfault: e.target.checked ? 1 : 0 })) log('SENT', 'sys', e.target.checked ? 'Simulated sensor wire cut' : 'Simulated sensor wire reconnected'); });
+
+$('btnEstop').addEventListener('click', async () => {
+  const release = S.estop;
+  if (await sendObj({ stop: release ? 0 : 1 })) log(release ? 'SENT' : 'E-STOP', release ? 'sys' : 'err', release ? 'Emergency stop released' : 'Emergency stop pressed');
+});
+
+// init
+renderModes(); renderGains(); setConnUI(); drawCharts();
+log('SYSTEM', 'sys', 'Ready. At the plant: Connect USB (close the Serial Monitor first). From anywhere: Connect Online.');
+</script>
+</body>
+</html>
