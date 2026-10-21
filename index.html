@@ -156,6 +156,13 @@ dialog h2{margin:0 0 4px;font-size:18px}
 .field{display:flex;flex-direction:column;gap:4px;margin-top:12px}
 .field input{height:38px;padding:0 10px;background:var(--panel2);color:var(--text);border:1px solid var(--line2);border-radius:8px;font-size:14px}
 .locked-ui{opacity:.4;pointer-events:none}
+.wlist{display:flex;flex-direction:column;gap:6px;max-height:260px;overflow-y:auto;margin-top:10px}
+.wrow{display:flex;align-items:center;gap:10px;padding:9px 12px;background:var(--panel2);border:1px solid var(--line);border-radius:8px;cursor:pointer;color:var(--text);font-size:14px;text-align:left}
+.wrow[aria-pressed=true]{border-color:var(--accent);background:#16293a}
+.wrow .nm{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bars{display:inline-flex;gap:2px;align-items:flex-end;height:14px}
+.bars i{width:4px;background:#3a4552;border-radius:1px;display:block}
+.bars i.on{background:var(--ok)}
 /* ---- phones and small screens ---- */
 @media (max-width:1100px){
   .app{min-width:0;padding:12px;gap:10px}
@@ -221,6 +228,7 @@ dialog h2{margin:0 0 4px;font-size:18px}
         <button type="button" data-r="full" aria-pressed="false">Full</button>
       </div>
       <div class="netdots"><span><i id="dWifi"></i>WiFi</span><span><i id="dMqtt"></i>Cloud</span><span><i id="dLink"></i>Ctrl</span></div>
+      <button type="button" class="small" id="btnWifi" title="Choose the WiFi network the gateway uses">WiFi…</button>
     </div>
     <div class="spacer"></div>
     <div class="lamp"><span style="color:var(--muted);font-size:13px">Control timing</span><span class="mono" style="font-size:13px" id="timing">late - · max - ms</span><span class="mono" style="font-size:13px;color:var(--muted)" id="mvText"></span></div>
@@ -364,6 +372,26 @@ dialog h2{margin:0 0 4px;font-size:18px}
     </section>
   </div>
 </div>
+
+<dialog id="dlgWifi">
+  <form method="dialog" id="frmWifi">
+    <h2>Gateway WiFi</h2>
+    <div class="sub" id="wCur">Current network: —</div>
+    <div class="row" style="margin-top:12px">
+      <button type="button" class="btn" id="wScan">Scan networks</button>
+      <span class="sub" id="wScanState"></span>
+    </div>
+    <div class="wlist" id="wList"></div>
+    <label class="field"><span class="lbl">Network name (SSID)</span><input id="wSsid" maxlength="32" autocomplete="off" spellcheck="false" placeholder="pick from the list or type it"></label>
+    <label class="field"><span class="lbl">Password</span><input id="wPass" type="password" maxlength="63" autocomplete="off" placeholder="empty only for an open network"></label>
+    <label style="display:flex;gap:6px;align-items:center;margin-top:6px;font-size:13px;color:var(--muted)"><input type="checkbox" id="wShow"> Show password</label>
+    <div class="sub" style="margin-top:10px">Only 2.4 GHz networks work with the ESP32. The gateway saves the network in its own memory — it stays after a power cut. The password is not stored in this page.</div>
+    <div class="row" style="margin-top:16px;justify-content:flex-end">
+      <button type="button" class="btn" id="wCancel">Cancel</button>
+      <button type="submit" class="btn btn-primary" id="wGo">Connect gateway</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="dlgOnline">
   <form method="dialog" id="frmOnline">
@@ -692,7 +720,8 @@ function applyRemoteUI() {
   if (g) {
     document.querySelectorAll('#remoteSeg button').forEach(b => b.setAttribute('aria-pressed', b.dataset.r === g.remote ? 'true' : 'false'));
     box.classList.toggle('full', g.remote === 'full');
-    $('dWifi').classList.toggle('on', !!g.wifi); $('dMqtt').classList.toggle('on', !!g.mqtt); $('dLink').classList.toggle('on', !!g.link);
+    $('dWifi').classList.toggle('on', !!g.wifi);
+    $('dWifi').parentElement.title = g.ssid ? `WiFi: ${g.ssid}` : 'No WiFi network set'; $('dMqtt').classList.toggle('on', !!g.mqtt); $('dLink').classList.toggle('on', !!g.link);
   }
 
   // Banner + control lock
@@ -726,6 +755,53 @@ function setControlsLocked(lock) {
   renderModes(); renderGains();   // they apply (or lift) the lock on every control
 }
 
+// --------------------- Gateway WiFi (USB only) ----------------------
+function bars(rssi) {
+  const n = rssi >= -55 ? 4 : rssi >= -67 ? 3 : rssi >= -75 ? 2 : 1;
+  return `<span class="bars" aria-label="signal ${n} of 4">${[1, 2, 3, 4].map(k => `<i class="${k <= n ? 'on' : ''}" style="height:${3 + k * 3}px"></i>`).join('')}</span>`;
+}
+function renderWifiList(list, err) {
+  $('wScanState').textContent = err ? 'Scan failed — try again' : `${list.length} network${list.length === 1 ? '' : 's'} found`;
+  const box = $('wList'); box.innerHTML = '';
+  list.forEach(n => {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'wrow'; b.setAttribute('aria-pressed', n.s === $('wSsid').value ? 'true' : 'false');
+    b.innerHTML = `${bars(n.r)}<span class="nm"></span><span class="sub mono">${n.r} dBm</span><span class="sub">${n.o ? 'open' : '🔒'}</span>`;
+    b.querySelector('.nm').textContent = n.s;
+    b.addEventListener('click', () => {
+      $('wSsid').value = n.s;
+      box.querySelectorAll('.wrow').forEach(x => x.setAttribute('aria-pressed', x === b ? 'true' : 'false'));
+      $('wPass').value = ''; $('wPass').disabled = !!n.o;
+      if (!n.o) $('wPass').focus();
+    });
+    box.appendChild(b);
+  });
+}
+$('btnWifi').addEventListener('click', () => {
+  if (S.via !== 'usb' || !S.gw) return;
+  $('wCur').textContent = 'Current network: ' + (S.gw.ssid ? `"${S.gw.ssid}" · ${S.gw.wifi ? 'connected' : 'not connected'}` : 'none');
+  $('wSsid').value = S.gw.ssid || ''; $('wPass').value = ''; $('wPass').disabled = false; $('wShow').checked = false; $('wPass').type = 'password';
+  $('wList').innerHTML = ''; $('wScanState').textContent = '';
+  $('dlgWifi').showModal();
+});
+$('wShow').addEventListener('change', e => { $('wPass').type = e.target.checked ? 'text' : 'password'; });
+$('wCancel').addEventListener('click', () => $('dlgWifi').close());
+$('wScan').addEventListener('click', async () => {
+  $('wScanState').textContent = 'Scanning… (about 3 s)'; $('wList').innerHTML = '';
+  await sendObj({ wifi: 'scan' }, true);
+});
+$('frmWifi').addEventListener('submit', async e => {
+  e.preventDefault();
+  const ssid = $('wSsid').value.trim(), pass = $('wPass').disabled ? '' : $('wPass').value;
+  if (!ssid) { $('wSsid').focus(); return; }
+  if (pass.length > 0 && pass.length < 8) { alert('WiFi password must be at least 8 characters (or empty for an open network).'); return; }
+  if (await sendObj({ wifi: 'set', ssid, pass }, true)) {
+    log('SENT', 'sys', `New WiFi sent to the gateway: "${ssid}"`);      // never log the password
+    $('wPass').value = '';
+    $('dlgWifi').close();
+  }
+});
+
 document.querySelectorAll('#remoteSeg button').forEach(b => b.addEventListener('click', async () => {
   if (S.via !== 'usb' || !S.gw) return;
   const r = b.dataset.r;
@@ -757,6 +833,22 @@ function handleLine(line) {
   if (m.remote_blocked) { log('REMOTE', 'remote', `Blocked online command (${m.remote_blocked.replace('_', ' ')})${m.cmd ? ': ' + JSON.stringify(m.cmd) : ''}`); return; }
   if (m.remote_rej) { log('REJECTED', 'rej', `The plant rejected the command (${m.remote_rej.replace('_', ' ')})`); return; }
   if (m.gwboot) { log('BOOT', 'boot', 'Gateway started'); return; }
+  if (m.wifilist) { renderWifiList(m.wifilist, m.err); return; }
+  if (m.wifiset) { log('SYSTEM', 'sys', `Gateway is switching to WiFi "${m.wifiset.ssid}" (saved in the gateway)…`); return; }
+  if (m.wifiscan) {
+    const w = m.wifiscan;
+    if (w.found) log('SYSTEM', 'sys', `Gateway sees WiFi "${w.ssid}" on 2.4 GHz · channel ${w.ch} · signal ${w.rssi} dBm`);
+    else log('ERROR', 'err', `Gateway can NOT see WiFi "${w.ssid}" (it sees ${w.n} other 2.4 GHz networks). Check the exact name (capital letters, spaces), or the router sends this network on 5 GHz only.`);
+    return;
+  }
+  if (m.wifierr !== undefined) {
+    const r = m.wifierr;
+    if (r === 8 || r === 0) return;                       // normal disconnect, not an error
+    const why = { 2: 'wrong WiFi password', 15: 'wrong WiFi password', 202: 'wrong WiFi password', 204: 'wrong WiFi password (handshake timeout)',
+                  201: 'network not found', 203: 'router refused the connection', 200: 'signal lost', 205: 'connection failed' }[r] || 'reason code ' + r;
+    log('ERROR', 'err', `Gateway WiFi failed: ${why} (code ${r})`);
+    return;
+  }
   if (m.gwlink !== undefined) { log('SYSTEM', 'sys', m.gwlink ? `Wireless link to gateway up (channel ${m.ch})` : 'Wireless link to gateway lost'); return; }
   if (m.err === 'no_link') { log('ERROR', 'err', 'Not delivered — controller not reachable over the wireless link'); return; }
   if (m.ack) {
@@ -774,6 +866,13 @@ function handleLine(line) {
   if (m.boot) { log('BOOT', 'boot', m.sim ? 'ESP32 started in SIMULATION mode (tanks simulated inside the ESP32)' : 'ESP32 started (reset or power-up)'); S.data = []; if (S.csv.length) S.session++; return; }
   if (m.err) { log('ERROR', 'err', `ESP32: ${m.err}${m.msg ? ' — ' + m.msg : ''}`); return; }
   log('RAW', 'sys', line.slice(0, 160));
+}
+
+// Computer's local time, e.g. 2026-10-20 09:06:22.827 — used for the file name only.
+// The time column inside the CSV is UTC in ISO 8601 (e.g. 2026-10-20T06:06:22.827Z); Saudi Arabia = UTC+3.
+function localStamp(d) {
+  const p = (n, w = 2) => String(n).padStart(w, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}.${p(d.getMilliseconds(), 3)}`;
 }
 
 function fmtGain(v) {
@@ -989,12 +1088,12 @@ $('btnClearData').addEventListener('click', () => { S.data = []; S.csv = []; S.s
 $('btnClearLog').addEventListener('click', () => { $('log').innerHTML = ''; });
 
 $('btnCsv').addEventListener('click', () => {
-  const head = 'session,pc_time,esp_ms,mode,sp,h1_est,h2_est,h3,d_est,u_req,pwm,derate,sensor_fault,estop';
+  const head = 'session,pc_time_utc,esp_ms,mode,sp,h1_est,h2_est,h3,d_est,u_req,pwm,derate,sensor_fault,estop';
   const body = S.csv.map(r => r.join(',')).join('\n');
   const blob = new Blob([head + '\n' + body], { type: 'text/csv' });
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
-  a.download = `tank_log_${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.csv`;
+  a.download = `tank_log_${localStamp(new Date()).replace(/[: ]/g, '-').slice(0, 19)}.csv`;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   log('SYSTEM', 'sys', `CSV exported (${S.csv.length} rows)`);
