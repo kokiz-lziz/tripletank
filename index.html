@@ -220,6 +220,8 @@ dialog h2{margin:0 0 4px;font-size:18px}
     <div class="lamp" id="lampDerate"><span class="l"></span>Tank-1 protection<span class="s">OFF</span></div>
     <div class="lamp" id="lampSfault"><span class="l"></span>Sensor fault<span class="s">OK</span></div>
     <div class="lamp" id="lampEstop"><span class="l"></span>E-stop<span class="s">RELEASED</span></div>
+    <div class="lamp" id="lampSys" style="display:none" title="System switch on the panel"><span class="l"></span>System<span class="s">ON</span></div>
+    <div class="lamp" id="lampPsw" style="display:none" title="Pump switch on the panel (works in Manual only)"><span class="l"></span>Pump switch<span class="s">ON</span></div>
     <div class="rbox" id="remoteBox" style="display:none" title="Only the person connected by USB at the plant can change this">
       <span>Remote</span>
       <div class="seg" role="group" aria-label="Remote access" id="remoteSeg">
@@ -863,6 +865,11 @@ function handleLine(line) {
     renderGains();
     return;
   }
+  if (m.ev === 'panel') { log('PANEL', 'sys', `Panel button: ${MODE_NAMES[m.mode] || m.mode}`); return; }
+  if (m.ev === 'sys') { log('PANEL', m.on ? 'ok' : 'err', m.on ? 'System switch ON — starts in Manual, pump 0' : 'System switch OFF — pump stopped, commands are refused'); return; }
+  if (m.ev === 'psw') { log('PANEL', 'sys', m.on ? 'Pump switch ON (Manual: full speed, adjust from here)' : 'Pump switch OFF (Manual: pump 0)'); return; }
+  if (m.err === 'system_off') { log('REJECTED', 'rej', 'Not applied — the System switch on the panel is OFF'); return; }
+  if (m.err === 'pump_switch_off') { log('PANEL', 'rej', 'Saved, but the Pump switch on the panel is OFF — pump stays at 0'); return; }
   if (m.boot) { log('BOOT', 'boot', m.sim ? 'ESP32 started in SIMULATION mode (tanks simulated inside the ESP32)' : 'ESP32 started (reset or power-up)'); S.data = []; if (S.csv.length) S.session++; return; }
   if (m.err) { log('ERROR', 'err', `ESP32: ${m.err}${m.msg ? ' — ' + m.msg : ''}`); return; }
   log('RAW', 'sys', line.slice(0, 160));
@@ -898,6 +905,12 @@ function onTelemetry(m) {
   if (m.sp !== S.spDev) {
     S.spDev = m.sp;
     if (document.activeElement !== $('spNum') && document.activeElement !== $('spRange')) { S.sp = m.sp; setSpUI(m.sp); }
+  }
+  if (m.mpwm !== undefined && m.mpwm !== S.pwmDev) {
+    S.pwmDev = m.mpwm;
+    if (document.activeElement !== $('pwmNum') && document.activeElement !== $('pwmRange')) {
+      S.pwm = m.mpwm; $('pwmRange').value = m.mpwm; $('pwmNum').value = m.mpwm;
+    }
   }
   S.estop = !!m.estop;
   $('simChip').style.display = m.sim ? '' : 'none';
@@ -949,6 +962,8 @@ function renderStatus(m) {
   setLamp('lampDerate', !!m.derate, 'on-warn', 'ACTIVE', 'OFF');
   setLamp('lampSfault', !!m.sfault, 'on-bad', 'FAULT', 'OK');
   setLamp('lampEstop', !!m.estop, 'on-bad', 'ACTIVE', 'RELEASED');
+  if (m.sys !== undefined) { $('lampSys').style.display = ''; setLamp('lampSys', !m.sys, 'on-bad', 'OFF', 'ON'); }
+  if (m.psw !== undefined) { $('lampPsw').style.display = ''; setLamp('lampPsw', !m.psw, 'on-warn', 'OFF', 'ON'); }
   $('timing').textContent = `late ${m.late ?? '-'} · max ${m.maxl ?? '-'} ms`;
   $('mvText').textContent = m.mv !== undefined ? `· sensor ${m.mv} mV` : '';
   const s = Math.floor(m.t / 1000);
