@@ -906,9 +906,9 @@ function onTelemetry(m) {
     S.spDev = m.sp;
     if (document.activeElement !== $('spNum') && document.activeElement !== $('spRange')) { S.sp = m.sp; setSpUI(m.sp); }
   }
-  if (m.mpwm !== undefined && m.mpwm !== S.pwmDev) {
-    S.pwmDev = m.mpwm;
-    if (document.activeElement !== $('pwmNum') && document.activeElement !== $('pwmRange')) {
+  if (m.mpwm !== undefined) {
+    const editing = S.pwmDrag || document.activeElement === $('pwmNum') || Date.now() < (S.pwmHoldUntil || 0);
+    if (!editing && (S.pwm !== m.mpwm || +$('pwmRange').value !== m.mpwm || +$('pwmNum').value !== m.mpwm)) {
       S.pwm = m.mpwm; $('pwmRange').value = m.mpwm; $('pwmNum').value = m.mpwm;
     }
   }
@@ -1219,12 +1219,15 @@ $('spNum').addEventListener('keydown', e => {
 });
 
 $('pwmRange').addEventListener('input', e => { $('pwmNum').value = e.target.value; });
-$('pwmRange').addEventListener('change', e => { S.pwm = +e.target.value; sendFull(); });
+$('pwmRange').addEventListener('change', e => { S.pwm = +e.target.value; S.pwmHoldUntil = Date.now() + 1500; sendFull(); });
+$('pwmRange').addEventListener('pointerdown', () => { S.pwmDrag = true; });
+window.addEventListener('pointerup', () => { S.pwmDrag = false; });
+window.addEventListener('pointercancel', () => { S.pwmDrag = false; });
 $('pwmNum').addEventListener('keydown', e => {
   if (e.key !== 'Enter') return;
   const v = Math.round(+$('pwmNum').value);
   if (!(v >= 0 && v <= 255)) { log('REJECTED', 'rej', 'PWM must be 0 to 255'); return; }
-  S.pwm = v; $('pwmRange').value = v; $('pwmNum').value = v; sendFull();
+  S.pwm = v; $('pwmRange').value = v; $('pwmNum').value = v; S.pwmHoldUntil = Date.now() + 1500; $('pwmNum').blur(); sendFull();
 });
 
 $('chkEso').addEventListener('change', e => { S.eso = e.target.checked; sendFull(); });
